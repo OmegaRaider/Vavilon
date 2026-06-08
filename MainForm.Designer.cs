@@ -54,6 +54,8 @@
             label4 = new Label();
             tabPage4 = new TabPage();
             dgvLog = new DataGridView();
+            tabPage5 = new TabPage();
+            dataGridView1 = new DataGridView();
             tabControl1.SuspendLayout();
             tabPage1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)numDays).BeginInit();
@@ -62,6 +64,8 @@
             tabPage3.SuspendLayout();
             tabPage4.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)dgvLog).BeginInit();
+            tabPage5.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)dataGridView1).BeginInit();
             SuspendLayout();
             // 
             // tabControl1
@@ -70,6 +74,7 @@
             tabControl1.Controls.Add(tabPage2);
             tabControl1.Controls.Add(tabPage3);
             tabControl1.Controls.Add(tabPage4);
+            tabControl1.Controls.Add(tabPage5);
             tabControl1.Dock = DockStyle.Fill;
             tabControl1.Location = new Point(0, 0);
             tabControl1.Name = "tabControl1";
@@ -186,6 +191,7 @@
             dgvLoans.Name = "dgvLoans";
             dgvLoans.Size = new Size(784, 497);
             dgvLoans.TabIndex = 0;
+            dgvLoans.CellContentClick += dgvLoans_CellContentClick;
             // 
             // tabPage3
             // 
@@ -319,6 +325,27 @@
             dgvLog.ReadOnly = true;
             dgvLog.Size = new Size(770, 527);
             dgvLog.TabIndex = 0;
+            dgvLog.CellContentClick += dgvLog_CellContentClick;
+            // 
+            // tabPage5
+            // 
+            tabPage5.Controls.Add(dataGridView1);
+            tabPage5.Location = new Point(4, 24);
+            tabPage5.Name = "tabPage5";
+            tabPage5.Padding = new Padding(3);
+            tabPage5.Size = new Size(776, 533);
+            tabPage5.TabIndex = 4;
+            tabPage5.Text = "Каталог книг";
+            tabPage5.UseVisualStyleBackColor = true;
+            // 
+            // dataGridView1
+            // 
+            dataGridView1.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+            dataGridView1.Dock = DockStyle.Fill;
+            dataGridView1.Location = new Point(3, 3);
+            dataGridView1.Name = "dataGridView1";
+            dataGridView1.Size = new Size(770, 527);
+            dataGridView1.TabIndex = 0;
             // 
             // MainForm
             // 
@@ -338,6 +365,8 @@
             tabPage3.PerformLayout();
             tabPage4.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)dgvLog).EndInit();
+            tabPage5.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)dataGridView1).EndInit();
             ResumeLayout(false);
         }
 
@@ -369,5 +398,7 @@
         private Label label5;
         private Label label4;
         private DataGridView dgvLog;
+        private TabPage tabPage5;
+        private DataGridView dataGridView1;
     }
 }

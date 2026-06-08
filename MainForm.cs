@@ -427,5 +427,15 @@ namespace Vavilon
                 MessageBox.Show($"Ошибка загрузки журнала действий: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
+        private void dgvLoans_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+
+        }
+
+        private void dgvLog_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+
+        }
     }
 }
