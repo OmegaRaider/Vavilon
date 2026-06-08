@@ -7,6 +7,9 @@ namespace Vavilon
 {
     public partial class MainForm : Form
     {
+        // Храним ID последней выданной книги
+        private int lastIssuedLoanId = -1;
+
         public MainForm()
         {
             InitializeComponent();
@@ -83,7 +86,23 @@ namespace Vavilon
                     var da = new NpgsqlDataAdapter(sql, conn);
                     var dt = new DataTable();
                     da.Fill(dt);
+
+                    // Принудительно обновляем DataGridView
+                    dgvLoans.DataSource = null;
                     dgvLoans.DataSource = dt;
+
+                    // Скрываем колонку ID
+                    if (dgvLoans.Columns.Count > 0)
+                    {
+                        dgvLoans.Columns[0].Visible = false;
+                        dgvLoans.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
+                    }
+
+                    // Если есть последний выданный ID, выделяем его
+                    if (lastIssuedLoanId != -1)
+                    {
+                        SelectLoanById(lastIssuedLoanId);
+                    }
                 }
             }
             catch (Exception ex)
@@ -92,10 +111,35 @@ namespace Vavilon
             }
         }
 
+        // Выделение строки с определенным loan_id
+        private void SelectLoanById(int loanId)
+        {
+            foreach (DataGridViewRow row in dgvLoans.Rows)
+            {
+                if (row.Cells[0].Value != null && Convert.ToInt32(row.Cells[0].Value) == loanId)
+                {
+                    row.Selected = true;
+                    dgvLoans.FirstDisplayedScrollingRowIndex = row.Index;
+
+                    // Подсвечиваем строку зеленым цветом
+                    row.DefaultCellStyle.BackColor = Color.LightGreen;
+
+                    // Показываем сообщение, что книга готова к возврату
+                    string bookTitle = row.Cells["книга"].Value?.ToString();
+                    MessageBox.Show($"Книга \"{bookTitle}\" успешно выдана!\nТеперь вы можете сразу её вернуть, нажав кнопку \"Вернуть книгу\".",
+                                    "Книга выдана", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                    // Автоматически переключаемся на вкладку возврата
+                    tabControl1.SelectedTab = tabPage2;
+
+                    break;
+                }
+            }
+        }
+
         // Выдача книги
         private void btnIssueBook_Click(object sender, EventArgs e)
         {
-            // Добавляем проверку, чтобы предотвратить двойной вызов
             if (btnIssueBook.Enabled == false)
                 return;
 
@@ -123,7 +167,6 @@ namespace Vavilon
                 using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
                 {
                     conn.Open();
-
                     using (var transaction = conn.BeginTransaction())
                     {
                         try
@@ -177,12 +220,16 @@ namespace Vavilon
                                         LoginForm.LogAction("INSERT", "book_loans", loanId,
                                             $"Выдача: инв.{invNumber} → читатель ID:{readerId}, на {days} дн.");
 
-                                        MessageBox.Show($"Книга выдана! ID записи: {loanId}");
+                                        transaction.Commit();
 
-                                        LoadLoans();
+                                        // Сохраняем ID выданной книги
+                                        lastIssuedLoanId = loanId;
+
+                                        // Очищаем поле
                                         txtInvNumber.Text = "";
 
-                                        transaction.Commit();
+                                        // Обновляем таблицу и выделяем новую запись
+                                        LoadLoans();
                                     }
                                 }
                             }
@@ -204,7 +251,6 @@ namespace Vavilon
         // Возврат книги
         private void btnReturnBook_Click(object sender, EventArgs e)
         {
-            // Добавляем проверку, чтобы предотвратить двойной вызов
             if (btnReturnBook.Enabled == false)
                 return;
 
@@ -214,18 +260,28 @@ namespace Vavilon
             {
                 if (dgvLoans.SelectedRows.Count == 0)
                 {
-                    MessageBox.Show("Выберите строку выдачи в таблице ниже");
+                    MessageBox.Show("Выберите строку выдачи в таблице ниже", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
+                // Проверяем, что книга еще не возвращена
                 string status = dgvLoans.SelectedRows[0].Cells["статус"].Value?.ToString();
                 if (status == "Возвращена")
                 {
-                    MessageBox.Show("Эта книга уже возвращена!");
+                    MessageBox.Show("Эта книга уже возвращена!", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
+                // Находим loan_id в выбранной строке
                 int loanId = Convert.ToInt32(dgvLoans.SelectedRows[0].Cells[0].Value);
+                string bookTitle = dgvLoans.SelectedRows[0].Cells["книга"].Value?.ToString();
+
+                // Подтверждение возврата
+                DialogResult result = MessageBox.Show($"Вернуть книгу \"{bookTitle}\"?", "Подтверждение возврата",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (result != DialogResult.Yes)
+                    return;
 
                 using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
                 {
@@ -242,10 +298,17 @@ namespace Vavilon
 
                                 if (rowsAffected > 0)
                                 {
-                                    LoginForm.LogAction("UPDATE", "book_loans", loanId, "Возврат книги");
-                                    MessageBox.Show("Книга возвращена!");
-                                    LoadLoans();
+                                    LoginForm.LogAction("UPDATE", "book_loans", loanId, $"Возврат книги: {bookTitle}");
                                     transaction.Commit();
+
+                                    MessageBox.Show($"Книга \"{bookTitle}\" успешно возвращена!", "Успех",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                                    // Сбрасываем последний выданный ID
+                                    lastIssuedLoanId = -1;
+
+                                    // Обновляем таблицу
+                                    LoadLoans();
                                 }
                                 else
                                 {
@@ -271,7 +334,6 @@ namespace Vavilon
         // Добавление читателя
         private void btnAddReader_Click(object sender, EventArgs e)
         {
-            // Добавляем проверку, чтобы предотвратить двойной вызов
             if (btnAddReader.Enabled == false)
                 return;
 
@@ -354,7 +416,6 @@ namespace Vavilon
                     da.Fill(dt);
                     dgvLog.DataSource = dt;
 
-                    // Настраиваем внешний вид таблицы журнала
                     if (dgvLog.Columns.Count > 0)
                     {
                         dgvLog.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
