@@ -102,7 +102,7 @@
             btnIssueBook.TabIndex = 6;
             btnIssueBook.Text = "Выдать книгу";
             btnIssueBook.UseVisualStyleBackColor = true;
-            btnIssueBook.Click += btnIssueBook_Click_1;
+            btnIssueBook.Click += btnIssueBook_Click;
             // 
             // numDays
             // 

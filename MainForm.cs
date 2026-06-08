@@ -1,11 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using Npgsql;
 
@@ -17,9 +11,15 @@ namespace Vavilon
         {
             InitializeComponent();
 
+            // Подключаем обработчики событий
+            btnIssueBook.Click += btnIssueBook_Click;
+            btnReturnBook.Click += btnReturnBook_Click;
+            btnAddReader.Click += btnAddReader_Click;
+            tabPage4.Enter += tabLog_Enter;
+
             // Прячем вкладку "Журнал действий" от обычных библиотекарей
             if (LoginForm.CurrentUserRole != "admin")
-                tabControl1.TabPages.RemoveAt(3); // индекс 3 = 4-я вкладка (Журнал)
+                tabControl1.TabPages.RemoveAt(3);
 
             this.Text = $"Библиотека — {LoginForm.CurrentUserRole} ({LoginForm.CurrentUserLogin})";
 
@@ -96,59 +96,81 @@ namespace Vavilon
             {
                 conn.Open();
 
-                // Ищем свободный экземпляр
-                string findCopy = @"
-                    SELECT copy_id FROM book_copies 
-                    WHERE inventory_number = @inv 
-                    AND copy_id NOT IN (SELECT copy_id FROM book_loans WHERE return_date IS NULL)";
-
-                using (var cmd = new NpgsqlCommand(findCopy, conn))
+                // Начинаем транзакцию для атомарности операции
+                using (var transaction = conn.BeginTransaction())
                 {
-                    cmd.Parameters.AddWithValue("@inv", invNumber);
-                    object copyObj = cmd.ExecuteScalar();
-
-                    if (copyObj == null)
+                    try
                     {
-                        MessageBox.Show("Книга не найдена или уже выдана!");
-                        return;
-                    }
+                        // Ищем свободный экземпляр
+                        string findCopy = @"
+                            SELECT copy_id FROM book_copies 
+                            WHERE inventory_number = @inv 
+                            AND copy_id NOT IN (SELECT copy_id FROM book_loans WHERE return_date IS NULL)";
 
-                    int copyId = Convert.ToInt32(copyObj);
-
-                    // Находим библиотекаря по логину
-                    string getLib = "SELECT lib_id FROM librarians WHERE login = @login";
-                    using (var cmdLib = new NpgsqlCommand(getLib, conn))
-                    {
-                        cmdLib.Parameters.AddWithValue("@login", LoginForm.CurrentUserLogin);
-                        int libId = Convert.ToInt32(cmdLib.ExecuteScalar());
-
-                        // Создаём запись выдачи
-                        string insertLoan = @"
-                            INSERT INTO book_loans (copy_id, reader_id, lib_id, issue_date, due_date) 
-                            VALUES (@copy, @reader, @lib, CURRENT_DATE, CURRENT_DATE + @days) 
-                            RETURNING loan_id";
-
-                        using (var cmdLoan = new NpgsqlCommand(insertLoan, conn))
+                        using (var cmd = new NpgsqlCommand(findCopy, conn))
                         {
-                            cmdLoan.Parameters.AddWithValue("@copy", copyId);
-                            cmdLoan.Parameters.AddWithValue("@reader", readerId);
-                            cmdLoan.Parameters.AddWithValue("@lib", libId);
-                            cmdLoan.Parameters.AddWithValue("@days", days);
+                            cmd.Parameters.AddWithValue("@inv", invNumber);
+                            object copyObj = cmd.ExecuteScalar();
 
-                            int loanId = Convert.ToInt32(cmdLoan.ExecuteScalar());
+                            if (copyObj == null)
+                            {
+                                MessageBox.Show("Книга не найдена или уже выдана!");
+                                return;
+                            }
 
-                            // Запись в журнал
-                            LoginForm.LogAction("INSERT", "book_loans", loanId,
-                                $"Выдача: инв.{invNumber} → читатель ID:{readerId}, на {days} дн.");
+                            int copyId = Convert.ToInt32(copyObj);
 
-                            MessageBox.Show($"Книга выдана! ID записи: {loanId}");
+                            // Находим библиотекаря по логину
+                            string getLib = "SELECT lib_id FROM librarians WHERE login = @login";
+                            using (var cmdLib = new NpgsqlCommand(getLib, conn))
+                            {
+                                cmdLib.Parameters.AddWithValue("@login", LoginForm.CurrentUserLogin);
+                                object libObj = cmdLib.ExecuteScalar();
 
-                            // Обновляем таблицу
-                            LoadLoans();
+                                if (libObj == null)
+                                {
+                                    MessageBox.Show("Библиотекарь не найден!");
+                                    return;
+                                }
 
-                            // Очищаем поле инвентарного номера
-                            txtInvNumber.Text = "";
+                                int libId = Convert.ToInt32(libObj);
+
+                                // Создаём запись выдачи
+                                string insertLoan = @"
+                                    INSERT INTO book_loans (copy_id, reader_id, lib_id, issue_date, due_date) 
+                                    VALUES (@copy, @reader, @lib, CURRENT_DATE, CURRENT_DATE + @days) 
+                                    RETURNING loan_id";
+
+                                using (var cmdLoan = new NpgsqlCommand(insertLoan, conn))
+                                {
+                                    cmdLoan.Parameters.AddWithValue("@copy", copyId);
+                                    cmdLoan.Parameters.AddWithValue("@reader", readerId);
+                                    cmdLoan.Parameters.AddWithValue("@lib", libId);
+                                    cmdLoan.Parameters.AddWithValue("@days", days);
+
+                                    int loanId = Convert.ToInt32(cmdLoan.ExecuteScalar());
+
+                                    // Запись в журнал
+                                    LoginForm.LogAction("INSERT", "book_loans", loanId,
+                                        $"Выдача: инв.{invNumber} → читатель ID:{readerId}, на {days} дн.");
+
+                                    MessageBox.Show($"Книга выдана! ID записи: {loanId}");
+
+                                    // Обновляем таблицу
+                                    LoadLoans();
+
+                                    // Очищаем поле инвентарного номера
+                                    txtInvNumber.Text = "";
+
+                                    transaction.Commit();
+                                }
+                            }
                         }
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        MessageBox.Show($"Ошибка при выдаче книги: {ex.Message}");
                     }
                 }
             }
@@ -163,23 +185,51 @@ namespace Vavilon
                 return;
             }
 
-            // Находим loan_id в выбранной строке (индекс 0 = первый столбец)
+            // Проверяем, что книга еще не возвращена
+            string status = dgvLoans.SelectedRows[0].Cells["статус"].Value?.ToString();
+            if (status == "Возвращена")
+            {
+                MessageBox.Show("Эта книга уже возвращена!");
+                return;
+            }
+
+            // Находим loan_id в выбранной строке
             int loanId = Convert.ToInt32(dgvLoans.SelectedRows[0].Cells[0].Value);
 
             using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
             {
                 conn.Open();
-                string sql = "UPDATE book_loans SET return_date = CURRENT_DATE WHERE loan_id = @id";
-                using (var cmd = new NpgsqlCommand(sql, conn))
+                using (var transaction = conn.BeginTransaction())
                 {
-                    cmd.Parameters.AddWithValue("@id", loanId);
-                    cmd.ExecuteNonQuery();
+                    try
+                    {
+                        string sql = "UPDATE book_loans SET return_date = CURRENT_DATE WHERE loan_id = @id AND return_date IS NULL";
+                        using (var cmd = new NpgsqlCommand(sql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@id", loanId);
+                            int rowsAffected = cmd.ExecuteNonQuery();
 
-                    LoginForm.LogAction("UPDATE", "book_loans", loanId, "Возврат книги");
-                    MessageBox.Show("Книга возвращена!");
+                            if (rowsAffected > 0)
+                            {
+                                LoginForm.LogAction("UPDATE", "book_loans", loanId, "Возврат книги");
+                                MessageBox.Show("Книга возвращена!");
 
-                    // Обновляем таблицу
-                    LoadLoans();
+                                // Обновляем таблицу
+                                LoadLoans();
+                                transaction.Commit();
+                            }
+                            else
+                            {
+                                MessageBox.Show("Ошибка: книга не найдена или уже возвращена!");
+                                transaction.Rollback();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        MessageBox.Show($"Ошибка при возврате книги: {ex.Message}");
+                    }
                 }
             }
         }
@@ -202,31 +252,44 @@ namespace Vavilon
             using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
             {
                 conn.Open();
-                string sql = @"
-                    INSERT INTO readers (last_name, first_name, middle_name, address, phone) 
-                    VALUES (@l, @f, @m, @a, @p) RETURNING reader_id";
-
-                using (var cmd = new NpgsqlCommand(sql, conn))
+                using (var transaction = conn.BeginTransaction())
                 {
-                    cmd.Parameters.AddWithValue("@l", lastName);
-                    cmd.Parameters.AddWithValue("@f", firstName);
-                    cmd.Parameters.AddWithValue("@m", string.IsNullOrEmpty(middleName) ? (object)DBNull.Value : middleName);
-                    cmd.Parameters.AddWithValue("@a", string.IsNullOrEmpty(address) ? (object)DBNull.Value : address);
-                    cmd.Parameters.AddWithValue("@p", string.IsNullOrEmpty(phone) ? (object)DBNull.Value : phone);
+                    try
+                    {
+                        string sql = @"
+                            INSERT INTO readers (last_name, first_name, middle_name, address, phone) 
+                            VALUES (@l, @f, @m, @a, @p) RETURNING reader_id";
 
-                    int newId = Convert.ToInt32(cmd.ExecuteScalar());
-                    LoginForm.LogAction("INSERT", "readers", newId, $"Добавлен: {lastName} {firstName}");
-                    MessageBox.Show("Читатель добавлен!");
+                        using (var cmd = new NpgsqlCommand(sql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@l", lastName);
+                            cmd.Parameters.AddWithValue("@f", firstName);
+                            cmd.Parameters.AddWithValue("@m", string.IsNullOrEmpty(middleName) ? (object)DBNull.Value : middleName);
+                            cmd.Parameters.AddWithValue("@a", string.IsNullOrEmpty(address) ? (object)DBNull.Value : address);
+                            cmd.Parameters.AddWithValue("@p", string.IsNullOrEmpty(phone) ? (object)DBNull.Value : phone);
 
-                    // Очищаем поля
-                    txtLastName.Text = "";
-                    txtFirstName.Text = "";
-                    txtMiddleName.Text = "";
-                    txtAddress.Text = "";
-                    txtPhone.Text = "";
+                            int newId = Convert.ToInt32(cmd.ExecuteScalar());
+                            LoginForm.LogAction("INSERT", "readers", newId, $"Добавлен: {lastName} {firstName}");
+                            MessageBox.Show("Читатель добавлен!");
 
-                    // Обновляем список читателей
-                    LoadReaders();
+                            // Очищаем поля
+                            txtLastName.Text = "";
+                            txtFirstName.Text = "";
+                            txtMiddleName.Text = "";
+                            txtAddress.Text = "";
+                            txtPhone.Text = "";
+
+                            // Обновляем список читателей
+                            LoadReaders();
+
+                            transaction.Commit();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        MessageBox.Show($"Ошибка при добавлении читателя: {ex.Message}");
+                    }
                 }
             }
         }
@@ -243,11 +306,6 @@ namespace Vavilon
                 da.Fill(dt);
                 dgvLog.DataSource = dt;
             }
-        }
-
-        private void btnIssueBook_Click_1(object sender, EventArgs e)
-        {
-
         }
     }
 }
