@@ -28,46 +28,51 @@
         /// </summary>
         private void InitializeComponent()
         {
-            textBox1 = new TextBox();
-            textBox2 = new TextBox();
+            txtLogin = new TextBox();
+            txtPassword = new TextBox();
             btnLogin = new Button();
             label1 = new Label();
             label2 = new Label();
             label3 = new Label();
             SuspendLayout();
             // 
-            // textBox1
+            // txtLogin
             // 
-            textBox1.Cursor = Cursors.IBeam;
-            textBox1.Location = new Point(290, 200);
-            textBox1.Name = "textBox1";
-            textBox1.Size = new Size(217, 23);
-            textBox1.TabIndex = 0;
+            txtLogin.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            txtLogin.Cursor = Cursors.IBeam;
+            txtLogin.Location = new Point(292, 230);
+            txtLogin.Name = "txtLogin";
+            txtLogin.Size = new Size(217, 23);
+            txtLogin.TabIndex = 0;
             // 
-            // textBox2
+            // txtPassword
             // 
-            textBox2.Cursor = Cursors.IBeam;
-            textBox2.Location = new Point(290, 260);
-            textBox2.Name = "textBox2";
-            textBox2.Size = new Size(217, 23);
-            textBox2.TabIndex = 1;
-            textBox2.UseSystemPasswordChar = true;
+            txtPassword.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            txtPassword.Cursor = Cursors.IBeam;
+            txtPassword.Location = new Point(292, 290);
+            txtPassword.Name = "txtPassword";
+            txtPassword.Size = new Size(217, 23);
+            txtPassword.TabIndex = 1;
+            txtPassword.UseSystemPasswordChar = true;
             // 
             // btnLogin
             // 
+            btnLogin.Anchor = AnchorStyles.Top;
             btnLogin.Cursor = Cursors.Hand;
-            btnLogin.Location = new Point(350, 320);
+            btnLogin.Location = new Point(347, 350);
             btnLogin.Name = "btnLogin";
             btnLogin.Size = new Size(75, 23);
             btnLogin.TabIndex = 2;
             btnLogin.Text = "Войти";
             btnLogin.UseVisualStyleBackColor = true;
+            btnLogin.Click += btnLogin_Click;
             // 
             // label1
             // 
+            label1.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             label1.AutoSize = true;
             label1.Font = new Font("a_DomIno", 18F, FontStyle.Italic, GraphicsUnit.Point, 204);
-            label1.Location = new Point(350, 153);
+            label1.Location = new Point(347, 175);
             label1.Name = "label1";
             label1.Size = new Size(87, 27);
             label1.TabIndex = 3;
@@ -75,8 +80,9 @@
             // 
             // label2
             // 
+            label2.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             label2.AutoSize = true;
-            label2.Location = new Point(180, 200);
+            label2.Location = new Point(177, 230);
             label2.Name = "label2";
             label2.Size = new Size(44, 15);
             label2.TabIndex = 4;
@@ -84,8 +90,9 @@
             // 
             // label3
             // 
+            label3.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             label3.AutoSize = true;
-            label3.Location = new Point(180, 260);
+            label3.Location = new Point(177, 290);
             label3.Name = "label3";
             label3.Size = new Size(52, 15);
             label3.TabIndex = 5;
@@ -101,18 +108,18 @@
             Controls.Add(label2);
             Controls.Add(label1);
             Controls.Add(btnLogin);
-            Controls.Add(textBox2);
-            Controls.Add(textBox1);
+            Controls.Add(txtPassword);
+            Controls.Add(txtLogin);
             Name = "LoginForm";
-            Text = "Form1";
+            Text = "LoginForm";
             ResumeLayout(false);
             PerformLayout();
         }
 
         #endregion
 
-        private TextBox textBox1;
-        private TextBox textBox2;
+        private TextBox txtLogin;
+        private TextBox txtPassword;
         private Button btnLogin;
         private Label label1;
         private Label label2;
