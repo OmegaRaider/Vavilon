@@ -8,7 +8,7 @@ namespace Vavilon
     public partial class LoginForm : Form
     {
         // Строка подключения к вашей БД в pgAdmin
-        // Замените параметры на свои: хост, порт, имя БД, пользователь, пароль
+      
         public static string ConnectionString =
             "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=123";
 
