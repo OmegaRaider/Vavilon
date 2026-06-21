@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Data;
+using System.Drawing;
 using System.Windows.Forms;
 using Npgsql;
 
@@ -7,28 +8,35 @@ namespace Vavilon
 {
     public partial class MainForm : Form
     {
-        // Храним ID последней выданной книги
         private int lastIssuedLoanId = -1;
 
         public MainForm()
         {
             InitializeComponent();
 
-            // Подключаем обработчик для вкладки журнала
             tabPage4.Enter += tabLog_Enter;
 
-            // Прячем вкладку "Журнал действий" от обычных библиотекарей
             if (LoginForm.CurrentUserRole != "admin")
-                tabControl1.TabPages.RemoveAt(3);
+            {
+                TabPage logTab = tabControl1.TabPages["tabPage4"];
+                if (logTab != null)
+                    tabControl1.TabPages.Remove(logTab);
+            }
+
+            tabPageReadersList.Enter += TabPageReadersList_Enter;
+            tabPageBooks.Enter += TabPageBooks_Enter;
 
             this.Text = $"Библиотека — {LoginForm.CurrentUserRole} ({LoginForm.CurrentUserLogin})";
 
-            // Загружаем данные
             LoadReaders();
             LoadLoans();
+            LoadReadersTable();
+            LoadBooks();
         }
 
-        // Загрузка списка читателей в выпадающий список
+        // ================================================================
+        // 1. ВЫДАЧА КНИГИ
+        // ================================================================
         private void LoadReaders()
         {
             try
@@ -38,30 +46,83 @@ namespace Vavilon
                     conn.Open();
                     string sql = @"SELECT reader_id, 
                                   COALESCE(last_name, '') || ' ' || COALESCE(first_name, '') AS full_name 
-                           FROM readers 
-                           ORDER BY last_name";
-
+                           FROM readers ORDER BY last_name";
                     var da = new NpgsqlDataAdapter(sql, conn);
                     var dt = new DataTable();
                     da.Fill(dt);
-
                     cmbReaders.DisplayMember = "full_name";
                     cmbReaders.ValueMember = "reader_id";
                     cmbReaders.DataSource = dt;
-
                     if (dt.Rows.Count == 0)
-                    {
                         cmbReaders.Text = "Нет зарегистрированных читателей";
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка загрузки читателей: " + ex.Message); }
+        }
+
+        private void btnIssueBook_Click(object sender, EventArgs e)
+        {
+            if (btnIssueBook.Enabled == false) return;
+            btnIssueBook.Enabled = false;
+            try
+            {
+                string invNumber = txtInvNumber.Text.Trim();
+                if (cmbReaders.SelectedValue == null) { MessageBox.Show("Выберите читателя"); return; }
+                int readerId = (int)cmbReaders.SelectedValue;
+                int days = (int)numDays.Value;
+                if (string.IsNullOrEmpty(invNumber)) { MessageBox.Show("Введите инвентарный номер"); return; }
+
+                using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
+                {
+                    conn.Open();
+                    using (var tx = conn.BeginTransaction())
+                    {
+                        string findCopy = @"
+                            SELECT copy_id FROM book_copies 
+                            WHERE inventory_number = @inv 
+                            AND copy_id NOT IN (SELECT copy_id FROM book_loans WHERE return_date IS NULL)";
+                        using (var cmd = new NpgsqlCommand(findCopy, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@inv", invNumber);
+                            object obj = cmd.ExecuteScalar();
+                            if (obj == null) { MessageBox.Show("Книга не найдена или уже выдана!"); return; }
+                            int copyId = Convert.ToInt32(obj);
+
+                            string getLib = "SELECT lib_id FROM librarians WHERE login = @login";
+                            using (var cmdLib = new NpgsqlCommand(getLib, conn))
+                            {
+                                cmdLib.Parameters.AddWithValue("@login", LoginForm.CurrentUserLogin);
+                                int libId = Convert.ToInt32(cmdLib.ExecuteScalar());
+
+                                string insert = @"INSERT INTO book_loans (copy_id, reader_id, lib_id, issue_date, due_date) 
+                                                  VALUES (@copy, @reader, @lib, CURRENT_DATE, CURRENT_DATE + @days) 
+                                                  RETURNING loan_id";
+                                using (var cmdLoan = new NpgsqlCommand(insert, conn))
+                                {
+                                    cmdLoan.Parameters.AddWithValue("@copy", copyId);
+                                    cmdLoan.Parameters.AddWithValue("@reader", readerId);
+                                    cmdLoan.Parameters.AddWithValue("@lib", libId);
+                                    cmdLoan.Parameters.AddWithValue("@days", days);
+                                    int loanId = Convert.ToInt32(cmdLoan.ExecuteScalar());
+                                    LoginForm.LogAction("INSERT", "book_loans", loanId,
+                                        $"Выдача: инв.{invNumber} → читатель ID:{readerId}, на {days} дн.");
+                                    tx.Commit();
+                                    lastIssuedLoanId = loanId;
+                                    txtInvNumber.Text = "";
+                                    LoadLoans();
+                                }
+                            }
+                        }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка загрузки списка читателей: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+            catch (Exception ex) { MessageBox.Show("Ошибка выдачи: " + ex.Message); }
+            finally { btnIssueBook.Enabled = true; }
         }
 
-        // Загрузка списка выданных книг в таблицу
+        // ================================================================
+        // 2. ВОЗВРАТ КНИГИ
+        // ================================================================
         private void LoadLoans()
         {
             try
@@ -82,36 +143,22 @@ namespace Vavilon
                         JOIN catalog_books cb ON bc.book_id = cb.book_id
                         JOIN readers r ON bl.reader_id = r.reader_id
                         ORDER BY bl.issue_date DESC";
-
                     var da = new NpgsqlDataAdapter(sql, conn);
                     var dt = new DataTable();
                     da.Fill(dt);
-
-                    // Принудительно обновляем DataGridView
                     dgvLoans.DataSource = null;
                     dgvLoans.DataSource = dt;
-
-                    // Скрываем колонку ID
                     if (dgvLoans.Columns.Count > 0)
                     {
                         dgvLoans.Columns[0].Visible = false;
                         dgvLoans.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
                     }
-
-                    // Если есть последний выданный ID, выделяем его
-                    if (lastIssuedLoanId != -1)
-                    {
-                        SelectLoanById(lastIssuedLoanId);
-                    }
+                    if (lastIssuedLoanId != -1) SelectLoanById(lastIssuedLoanId);
                 }
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка загрузки списка выдач: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+            catch (Exception ex) { MessageBox.Show("Ошибка загрузки выдач: " + ex.Message); }
         }
 
-        // Выделение строки с определенным loan_id
         private void SelectLoanById(int loanId)
         {
             foreach (DataGridViewRow row in dgvLoans.Rows)
@@ -120,225 +167,63 @@ namespace Vavilon
                 {
                     row.Selected = true;
                     dgvLoans.FirstDisplayedScrollingRowIndex = row.Index;
-
-                    // Подсвечиваем строку зеленым цветом
                     row.DefaultCellStyle.BackColor = Color.LightGreen;
-
-                    // Показываем сообщение, что книга готова к возврату
                     string bookTitle = row.Cells["книга"].Value?.ToString();
-                    MessageBox.Show($"Книга \"{bookTitle}\" успешно выдана!\nТеперь вы можете сразу её вернуть, нажав кнопку \"Вернуть книгу\".",
-                                    "Книга выдана", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                    // Автоматически переключаемся на вкладку возврата
+                    MessageBox.Show($"Книга \"{bookTitle}\" успешно выдана!\nМожно сразу вернуть.",
+                        "Книга выдана", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     tabControl1.SelectedTab = tabPage2;
-
                     break;
                 }
             }
         }
 
-        // Выдача книги
-        private void btnIssueBook_Click(object sender, EventArgs e)
-        {
-            if (btnIssueBook.Enabled == false)
-                return;
-
-            btnIssueBook.Enabled = false;
-
-            try
-            {
-                string invNumber = txtInvNumber.Text.Trim();
-
-                if (cmbReaders.SelectedValue == null)
-                {
-                    MessageBox.Show("Выберите читателя");
-                    return;
-                }
-
-                int readerId = (int)cmbReaders.SelectedValue;
-                int days = (int)numDays.Value;
-
-                if (string.IsNullOrEmpty(invNumber))
-                {
-                    MessageBox.Show("Введите инвентарный номер книги");
-                    return;
-                }
-
-                using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
-                {
-                    conn.Open();
-                    using (var transaction = conn.BeginTransaction())
-                    {
-                        try
-                        {
-                            string findCopy = @"
-                                SELECT copy_id FROM book_copies 
-                                WHERE inventory_number = @inv 
-                                AND copy_id NOT IN (SELECT copy_id FROM book_loans WHERE return_date IS NULL)";
-
-                            using (var cmd = new NpgsqlCommand(findCopy, conn))
-                            {
-                                cmd.Parameters.AddWithValue("@inv", invNumber);
-                                object copyObj = cmd.ExecuteScalar();
-
-                                if (copyObj == null)
-                                {
-                                    MessageBox.Show("Книга не найдена или уже выдана!");
-                                    return;
-                                }
-
-                                int copyId = Convert.ToInt32(copyObj);
-
-                                string getLib = "SELECT lib_id FROM librarians WHERE login = @login";
-                                using (var cmdLib = new NpgsqlCommand(getLib, conn))
-                                {
-                                    cmdLib.Parameters.AddWithValue("@login", LoginForm.CurrentUserLogin);
-                                    object libObj = cmdLib.ExecuteScalar();
-
-                                    if (libObj == null)
-                                    {
-                                        MessageBox.Show("Библиотекарь не найден!");
-                                        return;
-                                    }
-
-                                    int libId = Convert.ToInt32(libObj);
-
-                                    string insertLoan = @"
-                                        INSERT INTO book_loans (copy_id, reader_id, lib_id, issue_date, due_date) 
-                                        VALUES (@copy, @reader, @lib, CURRENT_DATE, CURRENT_DATE + @days) 
-                                        RETURNING loan_id";
-
-                                    using (var cmdLoan = new NpgsqlCommand(insertLoan, conn))
-                                    {
-                                        cmdLoan.Parameters.AddWithValue("@copy", copyId);
-                                        cmdLoan.Parameters.AddWithValue("@reader", readerId);
-                                        cmdLoan.Parameters.AddWithValue("@lib", libId);
-                                        cmdLoan.Parameters.AddWithValue("@days", days);
-
-                                        int loanId = Convert.ToInt32(cmdLoan.ExecuteScalar());
-
-                                        LoginForm.LogAction("INSERT", "book_loans", loanId,
-                                            $"Выдача: инв.{invNumber} → читатель ID:{readerId}, на {days} дн.");
-
-                                        transaction.Commit();
-
-                                        // Сохраняем ID выданной книги
-                                        lastIssuedLoanId = loanId;
-
-                                        // Очищаем поле
-                                        txtInvNumber.Text = "";
-
-                                        // Обновляем таблицу и выделяем новую запись
-                                        LoadLoans();
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            transaction.Rollback();
-                            MessageBox.Show($"Ошибка при выдаче книги: {ex.Message}");
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                btnIssueBook.Enabled = true;
-            }
-        }
-
-        // Возврат книги
         private void btnReturnBook_Click(object sender, EventArgs e)
         {
-            if (btnReturnBook.Enabled == false)
-                return;
-
+            if (btnReturnBook.Enabled == false) return;
             btnReturnBook.Enabled = false;
-
             try
             {
-                if (dgvLoans.SelectedRows.Count == 0)
-                {
-                    MessageBox.Show("Выберите строку выдачи в таблице ниже", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                // Проверяем, что книга еще не возвращена
+                if (dgvLoans.SelectedRows.Count == 0) { MessageBox.Show("Выберите строку выдачи"); return; }
                 string status = dgvLoans.SelectedRows[0].Cells["статус"].Value?.ToString();
-                if (status == "Возвращена")
-                {
-                    MessageBox.Show("Эта книга уже возвращена!", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                // Находим loan_id в выбранной строке
+                if (status == "Возвращена") { MessageBox.Show("Эта книга уже возвращена!"); return; }
                 int loanId = Convert.ToInt32(dgvLoans.SelectedRows[0].Cells[0].Value);
                 string bookTitle = dgvLoans.SelectedRows[0].Cells["книга"].Value?.ToString();
-
-                // Подтверждение возврата
-                DialogResult result = MessageBox.Show($"Вернуть книгу \"{bookTitle}\"?", "Подтверждение возврата",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-                if (result != DialogResult.Yes)
-                    return;
+                if (MessageBox.Show($"Вернуть книгу \"{bookTitle}\"?", "Подтверждение",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
                 using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
                 {
                     conn.Open();
-                    using (var transaction = conn.BeginTransaction())
+                    using (var tx = conn.BeginTransaction())
                     {
-                        try
+                        string sql = "UPDATE book_loans SET return_date = CURRENT_DATE WHERE loan_id = @id AND return_date IS NULL";
+                        using (var cmd = new NpgsqlCommand(sql, conn))
                         {
-                            string sql = "UPDATE book_loans SET return_date = CURRENT_DATE WHERE loan_id = @id AND return_date IS NULL";
-                            using (var cmd = new NpgsqlCommand(sql, conn))
+                            cmd.Parameters.AddWithValue("@id", loanId);
+                            if (cmd.ExecuteNonQuery() > 0)
                             {
-                                cmd.Parameters.AddWithValue("@id", loanId);
-                                int rowsAffected = cmd.ExecuteNonQuery();
-
-                                if (rowsAffected > 0)
-                                {
-                                    LoginForm.LogAction("UPDATE", "book_loans", loanId, $"Возврат книги: {bookTitle}");
-                                    transaction.Commit();
-
-                                    MessageBox.Show($"Книга \"{bookTitle}\" успешно возвращена!", "Успех",
-                                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                                    // Сбрасываем последний выданный ID
-                                    lastIssuedLoanId = -1;
-
-                                    // Обновляем таблицу
-                                    LoadLoans();
-                                }
-                                else
-                                {
-                                    MessageBox.Show("Ошибка: книга не найдена или уже возвращена!");
-                                    transaction.Rollback();
-                                }
+                                LoginForm.LogAction("UPDATE", "book_loans", loanId, $"Возврат: {bookTitle}");
+                                tx.Commit();
+                                MessageBox.Show($"Книга \"{bookTitle}\" возвращена!", "Успех");
+                                lastIssuedLoanId = -1;
+                                LoadLoans();
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            transaction.Rollback();
-                            MessageBox.Show($"Ошибка при возврате книги: {ex.Message}");
+                            else MessageBox.Show("Ошибка: книга уже возвращена или не найдена");
                         }
                     }
                 }
             }
-            finally
-            {
-                btnReturnBook.Enabled = true;
-            }
+            catch (Exception ex) { MessageBox.Show("Ошибка возврата: " + ex.Message); }
+            finally { btnReturnBook.Enabled = true; }
         }
 
-        // Добавление читателя
+        // ================================================================
+        // 3. ДОБАВИТЬ ЧИТАТЕЛЯ
+        // ================================================================
         private void btnAddReader_Click(object sender, EventArgs e)
         {
-            if (btnAddReader.Enabled == false)
-                return;
-
+            if (btnAddReader.Enabled == false) return;
             btnAddReader.Enabled = false;
-
             try
             {
                 string lastName = txtLastName.Text.Trim();
@@ -346,63 +231,220 @@ namespace Vavilon
                 string middleName = txtMiddleName.Text.Trim();
                 string address = txtAddress.Text.Trim();
                 string phone = txtPhone.Text.Trim();
-
                 if (string.IsNullOrEmpty(lastName) || string.IsNullOrEmpty(firstName))
-                {
-                    MessageBox.Show("Фамилия и имя обязательны для заполнения", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
+                { MessageBox.Show("Фамилия и имя обязательны"); return; }
 
                 using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
                 {
                     conn.Open();
-                    using (var transaction = conn.BeginTransaction())
+                    using (var tx = conn.BeginTransaction())
                     {
-                        try
+                        string sql = @"INSERT INTO readers (last_name, first_name, middle_name, address, phone) 
+                                       VALUES (@l, @f, @m, @a, @p) RETURNING reader_id";
+                        using (var cmd = new NpgsqlCommand(sql, conn))
                         {
-                            string sql = @"
-                                INSERT INTO readers (last_name, first_name, middle_name, address, phone) 
-                                VALUES (@l, @f, @m, @a, @p) RETURNING reader_id";
-
-                            using (var cmd = new NpgsqlCommand(sql, conn))
-                            {
-                                cmd.Parameters.AddWithValue("@l", lastName);
-                                cmd.Parameters.AddWithValue("@f", firstName);
-                                cmd.Parameters.AddWithValue("@m", string.IsNullOrEmpty(middleName) ? (object)DBNull.Value : middleName);
-                                cmd.Parameters.AddWithValue("@a", string.IsNullOrEmpty(address) ? (object)DBNull.Value : address);
-                                cmd.Parameters.AddWithValue("@p", string.IsNullOrEmpty(phone) ? (object)DBNull.Value : phone);
-
-                                int newId = Convert.ToInt32(cmd.ExecuteScalar());
-                                LoginForm.LogAction("INSERT", "readers", newId, $"Добавлен: {lastName} {firstName}");
-
-                                transaction.Commit();
-
-                                MessageBox.Show($"Читатель \"{lastName} {firstName}\" успешно добавлен!", "Успех", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                                txtLastName.Text = "";
-                                txtFirstName.Text = "";
-                                txtMiddleName.Text = "";
-                                txtAddress.Text = "";
-                                txtPhone.Text = "";
-
-                                LoadReaders();
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            transaction.Rollback();
-                            MessageBox.Show($"Ошибка при добавлении читателя: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            cmd.Parameters.AddWithValue("@l", lastName);
+                            cmd.Parameters.AddWithValue("@f", firstName);
+                            cmd.Parameters.AddWithValue("@m", (object)middleName ?? DBNull.Value);
+                            cmd.Parameters.AddWithValue("@a", (object)address ?? DBNull.Value);
+                            cmd.Parameters.AddWithValue("@p", (object)phone ?? DBNull.Value);
+                            int newId = Convert.ToInt32(cmd.ExecuteScalar());
+                            LoginForm.LogAction("INSERT", "readers", newId, $"Добавлен: {lastName} {firstName}");
+                            tx.Commit();
+                            MessageBox.Show($"Читатель \"{lastName} {firstName}\" добавлен!");
+                            txtLastName.Clear(); txtFirstName.Clear(); txtMiddleName.Clear();
+                            txtAddress.Clear(); txtPhone.Clear();
+                            LoadReaders();
+                            LoadReadersTable();
                         }
                     }
                 }
             }
-            finally
-            {
-                btnAddReader.Enabled = true;
-            }
+            catch (Exception ex) { MessageBox.Show("Ошибка: " + ex.Message); }
+            finally { btnAddReader.Enabled = true; }
         }
 
-        // Загрузка журнала действий (когда открываем вкладку)
+        // ================================================================
+        // 4. СПИСОК ЧИТАТЕЛЕЙ (фильтры: ФИО, телефон, адрес, дата регистрации)
+        // ================================================================
+        private void TabPageReadersList_Enter(object sender, EventArgs e)
+        {
+            ResetReaderFilters();
+            LoadReadersTable();
+        }
+
+        private void ResetReaderFilters()
+        {
+            txtFilterFIO.Text = "";
+            txtFilterPhone.Text = "";
+            txtFilterAddress.Text = "";
+            chkRegDateEnabled.Checked = false;
+            dtpFilterRegFrom.Value = DateTime.Today;
+            dtpFilterRegTo.Value = DateTime.Today;
+        }
+
+        private void LoadReadersTable()
+        {
+            try
+            {
+                string fio = txtFilterFIO.Text.Trim();
+                string phone = txtFilterPhone.Text.Trim();
+                string address = txtFilterAddress.Text.Trim();
+                bool dateEnabled = chkRegDateEnabled.Checked;
+                DateTime regFrom = dtpFilterRegFrom.Value.Date;
+                DateTime regTo = dtpFilterRegTo.Value.Date;
+
+                using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
+                {
+                    conn.Open();
+                    string sql = "SELECT reader_id, last_name, first_name, middle_name, address, phone, registration_date FROM readers WHERE 1=1";
+                    var cmd = new NpgsqlCommand();
+                    cmd.Connection = conn;
+
+                    if (!string.IsNullOrEmpty(fio))
+                    {
+                        sql += " AND (last_name || ' ' || first_name || ' ' || COALESCE(middle_name, '')) ILIKE '%' || @fio || '%'";
+                        cmd.Parameters.AddWithValue("@fio", fio);
+                    }
+                    if (!string.IsNullOrEmpty(phone))
+                    {
+                        sql += " AND phone ILIKE '%' || @phone || '%'";
+                        cmd.Parameters.AddWithValue("@phone", phone);
+                    }
+                    if (!string.IsNullOrEmpty(address))
+                    {
+                        sql += " AND address ILIKE '%' || @address || '%'";
+                        cmd.Parameters.AddWithValue("@address", address);
+                    }
+                    if (dateEnabled)
+                    {
+                        sql += " AND registration_date >= @regFrom AND registration_date <= @regTo";
+                        cmd.Parameters.AddWithValue("@regFrom", regFrom);
+                        cmd.Parameters.AddWithValue("@regTo", regTo);
+                    }
+
+                    sql += " ORDER BY last_name";
+                    cmd.CommandText = sql;
+
+                    var dt = new DataTable();
+                    dt.Load(cmd.ExecuteReader());
+                    dgvReaders.DataSource = dt;
+                    if (dgvReaders.Columns.Count > 0)
+                    {
+                        dgvReaders.Columns[0].Visible = false;
+                        dgvReaders.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
+                    }
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка загрузки списка: " + ex.Message); }
+        }
+
+        private void btnApplyReaderFilters_Click(object sender, EventArgs e)
+        {
+            LoadReadersTable();
+            LoginForm.LogAction("SEARCH", "readers", 0, "Применены фильтры читателей");
+        }
+
+        private void btnResetReaderFilters_Click(object sender, EventArgs e)
+        {
+            ResetReaderFilters();
+            LoadReadersTable();
+            LoginForm.LogAction("SEARCH", "readers", 0, "Сброс фильтров читателей");
+        }
+
+        // ================================================================
+        // 5. КАТАЛОГ КНИГ (фильтры: автор, название, издательство, год)
+        // ================================================================
+        private void TabPageBooks_Enter(object sender, EventArgs e)
+        {
+            ResetBookFilters();
+            LoadBooks();
+        }
+
+        private void ResetBookFilters()
+        {
+            txtFilterAuthor.Text = "";
+            txtFilterTitle.Text = "";
+            txtFilterPublisher.Text = "";
+            numFilterYearFrom.Value = 0;
+            numFilterYearTo.Value = 0;
+        }
+
+        private void LoadBooks()
+        {
+            try
+            {
+                string author = txtFilterAuthor.Text.Trim();
+                string title = txtFilterTitle.Text.Trim();
+                string publisher = txtFilterPublisher.Text.Trim();
+                int yearFrom = (int)numFilterYearFrom.Value;
+                int yearTo = (int)numFilterYearTo.Value;
+
+                using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
+                {
+                    conn.Open();
+                    string sql = "SELECT book_id, author, title, publisher, year_pub, total_quantity FROM catalog_books WHERE 1=1";
+                    var cmd = new NpgsqlCommand();
+                    cmd.Connection = conn;
+
+                    if (!string.IsNullOrEmpty(author))
+                    {
+                        sql += " AND author ILIKE '%' || @author || '%'";
+                        cmd.Parameters.AddWithValue("@author", author);
+                    }
+                    if (!string.IsNullOrEmpty(title))
+                    {
+                        sql += " AND title ILIKE '%' || @title || '%'";
+                        cmd.Parameters.AddWithValue("@title", title);
+                    }
+                    if (!string.IsNullOrEmpty(publisher))
+                    {
+                        sql += " AND publisher ILIKE '%' || @publisher || '%'";
+                        cmd.Parameters.AddWithValue("@publisher", publisher);
+                    }
+                    if (yearFrom > 0)
+                    {
+                        sql += " AND year_pub >= @yearFrom";
+                        cmd.Parameters.AddWithValue("@yearFrom", yearFrom);
+                    }
+                    if (yearTo > 0)
+                    {
+                        sql += " AND year_pub <= @yearTo";
+                        cmd.Parameters.AddWithValue("@yearTo", yearTo);
+                    }
+
+                    sql += " ORDER BY author";
+                    cmd.CommandText = sql;
+
+                    var dt = new DataTable();
+                    dt.Load(cmd.ExecuteReader());
+                    dgvBooks.DataSource = dt;
+                    if (dgvBooks.Columns.Count > 0)
+                    {
+                        dgvBooks.Columns[0].Visible = false;
+                        dgvBooks.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
+                    }
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Ошибка загрузки каталога: " + ex.Message); }
+        }
+
+        private void btnApplyBookFilters_Click(object sender, EventArgs e)
+        {
+            LoadBooks();
+            LoginForm.LogAction("SEARCH", "catalog_books", 0, "Применены фильтры книг");
+        }
+
+        private void btnResetBookFilters_Click(object sender, EventArgs e)
+        {
+            ResetBookFilters();
+            LoadBooks();
+            LoginForm.LogAction("SEARCH", "catalog_books", 0, "Сброс фильтров книг");
+        }
+
+        // ================================================================
+        // 6. ЖУРНАЛ ДЕЙСТВИЙ
+        // ================================================================
         private void tabLog_Enter(object sender, EventArgs e)
         {
             try
@@ -415,30 +457,27 @@ namespace Vavilon
                     var dt = new DataTable();
                     da.Fill(dt);
                     dgvLog.DataSource = dt;
-
                     if (dgvLog.Columns.Count > 0)
-                    {
                         dgvLog.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
-                    }
                 }
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Ошибка загрузки журнала действий: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+            catch (Exception ex) { MessageBox.Show("Ошибка журнала: " + ex.Message); }
         }
 
-        private void dgvLoans_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        private void dgvLoans_CellContentClick(object sender, DataGridViewCellEventArgs e) { }
+        private void dgvLog_CellContentClick(object sender, DataGridViewCellEventArgs e) { }
+
+        private void txtFilterFIO_TextChanged(object sender, EventArgs e)
         {
 
         }
 
-        private void dgvLog_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        private void label17_Click(object sender, EventArgs e)
         {
 
         }
 
-        private void button1_Click(object sender, EventArgs e)
+        private void tabPageBooks_Click(object sender, EventArgs e)
         {
 
         }
