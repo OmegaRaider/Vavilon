@@ -131,18 +131,29 @@ namespace Vavilon
                 {
                     conn.Open();
                     string sql = @"
-                        SELECT bl.loan_id, 
-                               r.last_name || ' ' || r.first_name AS читатель,
-                               cb.title || ' (' || cb.author || ')' AS книга,
-                               bc.inventory_number AS инвентарный_номер, 
-                               bl.issue_date AS дата_выдачи, 
-                               bl.due_date AS срок_возврата,
-                               CASE WHEN bl.return_date IS NULL THEN 'На руках' ELSE 'Возвращена' END AS статус
-                        FROM book_loans bl
-                        JOIN book_copies bc ON bl.copy_id = bc.copy_id
-                        JOIN catalog_books cb ON bc.book_id = cb.book_id
-                        JOIN readers r ON bl.reader_id = r.reader_id
-                        ORDER BY bl.issue_date DESC";
+                SELECT bl.loan_id, 
+                       r.last_name || ' ' || r.first_name AS читатель,
+                       cb.title || ' (' || cb.author || ')' AS книга,
+                       bc.inventory_number AS инвентарный_номер, 
+                       bl.issue_date AS дата_выдачи, 
+                       bl.due_date AS срок_возврата,
+                       CASE 
+                           WHEN bl.return_date IS NOT NULL THEN 'Возвращена'
+                           WHEN bl.due_date < CURRENT_DATE THEN 'Просрочено'
+                           ELSE 'На руках'
+                       END AS статус
+                FROM book_loans bl
+                JOIN book_copies bc ON bl.copy_id = bc.copy_id
+                JOIN catalog_books cb ON bc.book_id = cb.book_id
+                JOIN readers r ON bl.reader_id = r.reader_id
+                ORDER BY bl.issue_date DESC";
+
+                    // Проверка на просрочку:
+                    /* CASE 
+                           WHEN bl.return_date IS NOT NULL THEN 'Возвращена'
+                           WHEN bl.due_date < CURRENT_DATE THEN 'Просрочено'
+                           ELSE 'На руках'
+                       END AS статус*/
                     var da = new NpgsqlDataAdapter(sql, conn);
                     var dt = new DataTable();
                     da.Fill(dt);
@@ -150,7 +161,7 @@ namespace Vavilon
                     dgvLoans.DataSource = dt;
                     if (dgvLoans.Columns.Count > 0)
                     {
-                        dgvLoans.Columns[0].Visible = false;
+                        dgvLoans.Columns["loan_id"].Visible = false;
                         dgvLoans.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
                     }
                     if (lastIssuedLoanId != -1) SelectLoanById(lastIssuedLoanId);
@@ -169,7 +180,7 @@ namespace Vavilon
                     dgvLoans.FirstDisplayedScrollingRowIndex = row.Index;
                     row.DefaultCellStyle.BackColor = Color.LightGreen;
                     string bookTitle = row.Cells["книга"].Value?.ToString();
-                    MessageBox.Show($"Книга \"{bookTitle}\" успешно выдана!\nМожно сразу вернуть.",
+                    MessageBox.Show($"Книга \"{bookTitle}\" успешно выдана!",
                         "Книга выдана", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     tabControl1.SelectedTab = tabPage2;
                     break;
@@ -383,45 +394,55 @@ namespace Vavilon
                 using (var conn = new NpgsqlConnection(LoginForm.ConnectionString))
                 {
                     conn.Open();
-                    string sql = "SELECT book_id, author, title, publisher, year_pub, total_quantity FROM catalog_books WHERE 1=1";
+                    string sql = @"
+                SELECT bc.copy_id, cb.author, cb.title, cb.publisher, cb.year_pub,
+                       bc.inventory_number, cb.total_quantity,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM book_loans bl2 
+                           WHERE bl2.copy_id = bc.copy_id AND bl2.return_date IS NULL
+                       ) THEN 'Выдан' ELSE 'В наличии' END AS статус_экземпляра
+                FROM catalog_books cb
+                JOIN book_copies bc ON cb.book_id = bc.book_id
+                WHERE 1=1";
                     var cmd = new NpgsqlCommand();
                     cmd.Connection = conn;
 
                     if (!string.IsNullOrEmpty(author))
                     {
-                        sql += " AND author ILIKE '%' || @author || '%'";
+                        sql += " AND cb.author ILIKE '%' || @author || '%'";
                         cmd.Parameters.AddWithValue("@author", author);
                     }
                     if (!string.IsNullOrEmpty(title))
                     {
-                        sql += " AND title ILIKE '%' || @title || '%'";
+                        sql += " AND cb.title ILIKE '%' || @title || '%'";
                         cmd.Parameters.AddWithValue("@title", title);
                     }
                     if (!string.IsNullOrEmpty(publisher))
                     {
-                        sql += " AND publisher ILIKE '%' || @publisher || '%'";
+                        sql += " AND cb.publisher ILIKE '%' || @publisher || '%'";
                         cmd.Parameters.AddWithValue("@publisher", publisher);
                     }
                     if (yearFrom > 0)
                     {
-                        sql += " AND year_pub >= @yearFrom";
+                        sql += " AND cb.year_pub >= @yearFrom";
                         cmd.Parameters.AddWithValue("@yearFrom", yearFrom);
                     }
                     if (yearTo > 0)
                     {
-                        sql += " AND year_pub <= @yearTo";
+                        sql += " AND cb.year_pub <= @yearTo";
                         cmd.Parameters.AddWithValue("@yearTo", yearTo);
                     }
 
-                    sql += " ORDER BY author";
+                    sql += " ORDER BY cb.author, cb.title, bc.inventory_number";
                     cmd.CommandText = sql;
 
                     var dt = new DataTable();
                     dt.Load(cmd.ExecuteReader());
                     dgvBooks.DataSource = dt;
+
                     if (dgvBooks.Columns.Count > 0)
                     {
-                        dgvBooks.Columns[0].Visible = false;
+                        dgvBooks.Columns["copy_id"].Visible = false;
                         dgvBooks.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
                     }
                 }
